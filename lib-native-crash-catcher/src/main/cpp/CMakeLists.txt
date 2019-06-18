@@ -11,7 +11,8 @@ set(ENABLE_LIBUNWIND ON)
 set(ENABLE_LIBUNWINDSTACK ON)
 set(ENABLE_CXXABI ON)
 set(ENABLE_STACKSCAN ON)
-
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=implicit-function-declaration")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 ")
 if (${ENABLE_INPROCESS})
     add_definitions(-DENABLE_INPROCESS)
 endif ()
@@ -19,18 +20,15 @@ if (${ENABLE_OUTOFPROCESS})
     add_definitions(-DENABLE_OUTOFPROCESS)
 endif ()
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=implicit-function-declaration")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 ")
+# 链接 CMakeLists.txt 子目录
+add_subdirectory(external/breakpad/src)
+list(APPEND LINK_LIBRARIES breakpad)
 
 # 添加要使用的头文件
 include_directories(
-        external/libbreakpad/src
-        external/libbreakpad/src/common/android/include
+        external/breakpad/src
+        external/breakpad/src/common/android/include
 )
-
-# 链接 CMakeLists.txt 子目录
-add_subdirectory(external/libbreakpad)
-list(APPEND LINK_LIBRARIES breakpad)
 
 # 生成动态库
 add_library(
