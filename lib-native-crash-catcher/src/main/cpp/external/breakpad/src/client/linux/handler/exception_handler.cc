@@ -147,11 +147,12 @@ namespace google_breakpad {
 
             // Only set an alternative stack if there isn't already one, or if the current
             // one is too small.
+            // 获取之前的信号处理栈, 判断其 ss_sp 是否满足要求, 不满足则重建
             if (sys_sigaltstack(NULL, &old_stack) == -1 || !old_stack.ss_sp ||
                 old_stack.ss_size < kSigStackSize) {
                 new_stack.ss_sp = calloc(1, kSigStackSize);
                 new_stack.ss_size = kSigStackSize;
-
+                // 将进程的信号处理堆栈替换成我们新写的 new_stack
                 if (sys_sigaltstack(&new_stack, NULL) == -1) {
                     free(new_stack.ss_sp);
                     return;
@@ -254,7 +255,9 @@ namespace google_breakpad {
         if (!g_handler_stack_)
             g_handler_stack_ = new std::vector<ExceptionHandler *>;
         if (install_handler) {
+            // 确定信号处理栈可用
             InstallAlternateStackLocked();
+            //
             InstallHandlersLocked();
         }
         g_handler_stack_->push_back(this);
@@ -283,23 +286,28 @@ namespace google_breakpad {
             return false;
 
         // Fail if unable to store all the old handlers.
+        // 1. 获取我们所关注的原生信号处理函数
         for (int i = 0; i < kNumHandledSignals; ++i) {
             if (sigaction(kExceptionSignals[i], NULL, &old_handlers[i]) == -1)
                 return false;
         }
 
+        // 2. 初始化一个信号响应器
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
+        // 2.1 初始化 sa.sa_mask 指定的信号集
         sigemptyset(&sa.sa_mask);
 
-        // Mask all exception signals when we're handling one of them.
+        // 2.2 向信号集中添加它所需要处理的信号
         for (int i = 0; i < kNumHandledSignals; ++i)
             sigaddset(&sa.sa_mask, kExceptionSignals[i]);
 
+        // 2.3 注入信号集的处理器
         sa.sa_sigaction = SignalHandler;
         sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
 
         for (int i = 0; i < kNumHandledSignals; ++i) {
+            // 3. 将系统相关的信号响应器替换成我们新建的
             if (sigaction(kExceptionSignals[i], &sa, NULL) == -1) {
                 // At this point it is impractical to back out changes, and so failure to
                 // install a signal is intentionally ignored.
@@ -359,6 +367,7 @@ namespace google_breakpad {
         // resets the signal handlers with sigaction + SA_SIGINFO and returns.
         // This forces the signal to be thrown again, but this time the kernel
         // will call the function with the right arguments.
+        // 判断我们之前注入的信号响应器是否被篡改了
         struct sigaction cur_handler;
         if (sigaction(sig, NULL, &cur_handler) == 0 &&
             cur_handler.sa_sigaction == SignalHandler &&
@@ -366,10 +375,10 @@ namespace google_breakpad {
             // Reset signal handler with the right flags.
             sigemptyset(&cur_handler.sa_mask);
             sigaddset(&cur_handler.sa_mask, sig);
-
+            // 重置 flag
             cur_handler.sa_sigaction = SignalHandler;
             cur_handler.sa_flags = SA_ONSTACK | SA_SIGINFO;
-
+            // 注入失败, 则替换为系统默认的信号处理器
             if (sigaction(sig, &cur_handler, NULL) == -1) {
                 // When resetting the handler fails, try to reset the
                 // default one to avoid an infinite loop here.
@@ -381,6 +390,7 @@ namespace google_breakpad {
         }
 
         bool handled = false;
+        // 获取所有的异常处理器的 HandleSignal 来其消费这个信号
         for (int i = g_handler_stack_->size() - 1; !handled && i >= 0; --i) {
             handled = (*g_handler_stack_)[i]->HandleSignal(sig, info, uc);
         }
@@ -390,6 +400,7 @@ namespace google_breakpad {
         // successfully, restore the default handler. Otherwise, restore the
         // previously installed handler. Then, when the signal is retriggered, it will
         // be delivered to the appropriate handler.
+        // 消费成功, 进行解注册
         if (handled) {
             InstallDefaultHandler(sig);
         } else {
