@@ -133,6 +133,7 @@ namespace google_breakpad {
 // Create an alternative stack to run the signal handlers on. This is done since
 // the signal might have been caused by a stack overflow.
 // Runs before crashing: normal context.
+// 创建一个新的信号栈, 防止之前的信号栈空间不足可能会导致 stack overflow.
         void InstallAlternateStackLocked() {
             if (stack_installed)
                 return;
@@ -143,12 +144,14 @@ namespace google_breakpad {
             // SIGSTKSZ may be too small to prevent the signal handlers from overrunning
             // the alternative stack. Ensure that the size of the alternative stack is
             // large enough.
+            // 描述信号栈的最小值
             static const unsigned kSigStackSize = std::max(16384, SIGSTKSZ);
 
             // Only set an alternative stack if there isn't already one, or if the current
             // one is too small.
-            // 获取之前的信号处理栈, 判断其 ss_sp 是否满足要求, 不满足则重建
+            // 获取之前的信号处理栈, 判断其 ss_sp 是否满足最小值要求, 不满足则重建
             if (sys_sigaltstack(NULL, &old_stack) == -1 || !old_stack.ss_sp ||
+                // 判断之前信号栈的大小
                 old_stack.ss_size < kSigStackSize) {
                 new_stack.ss_sp = calloc(1, kSigStackSize);
                 new_stack.ss_size = kSigStackSize;
@@ -255,11 +258,12 @@ namespace google_breakpad {
         if (!g_handler_stack_)
             g_handler_stack_ = new std::vector<ExceptionHandler *>;
         if (install_handler) {
-            // 确定信号处理栈可用
+            // 1. 尝试替换新的信号栈, 防止出现 Stack over flow
             InstallAlternateStackLocked();
-            //
+            // 2. 替换信号处理器
             InstallHandlersLocked();
         }
+        // 将当前处理器记录到缓存
         g_handler_stack_->push_back(this);
         pthread_mutex_unlock(&g_handler_stack_mutex_);
     }
