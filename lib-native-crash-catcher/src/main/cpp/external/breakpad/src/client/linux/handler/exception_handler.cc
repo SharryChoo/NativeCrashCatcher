@@ -260,7 +260,7 @@ namespace google_breakpad {
         if (install_handler) {
             // 1. 尝试替换新的信号栈, 防止出现 Stack over flow
             InstallAlternateStackLocked();
-            // 2. 替换信号处理器
+            // 2. 注册信号处理函数
             InstallHandlersLocked();
         }
         // 将当前处理器记录到缓存
@@ -296,17 +296,17 @@ namespace google_breakpad {
                 return false;
         }
 
-        // 2. 初始化一个信号响应器
+        // 2. 初始化一个信号处理函数
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
-        // 2.1 初始化 sa.sa_mask 指定的信号集
+        // 2.1 初始化 sa.sa_mask 信号集
         sigemptyset(&sa.sa_mask);
 
-        // 2.2 向信号集中添加它所需要处理的信号
+        // 2.2 为这个信号处理函数添加它能够处理的信号
         for (int i = 0; i < kNumHandledSignals; ++i)
             sigaddset(&sa.sa_mask, kExceptionSignals[i]);
 
-        // 2.3 注入信号集的处理器
+        // 2.3 注入信号处理实现
         sa.sa_sigaction = SignalHandler;
         sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
 
@@ -330,7 +330,9 @@ namespace google_breakpad {
             return;
 
         for (int i = 0; i < kNumHandledSignals; ++i) {
+            // 将线程信号处理函数替换成系统默认的
             if (sigaction(kExceptionSignals[i], &old_handlers[i], NULL) == -1) {
+                // 重置系统信号处理器
                 InstallDefaultHandler(kExceptionSignals[i]);
             }
         }
@@ -344,6 +346,9 @@ namespace google_breakpad {
 // This function runs in a compromised context: see the top of the file.
 // Runs on the crashing thread.
 // static
+    // 1. 第一个参数为信号值
+    // 2. 第二个参数为信号的一些具体信息
+    // 3. 第三个参数为一些上下文信息
     void ExceptionHandler::SignalHandler(int sig, siginfo_t *info, void *uc) {
         ALOGE("==========init handlers_installed==========");
 
@@ -404,15 +409,18 @@ namespace google_breakpad {
         // successfully, restore the default handler. Otherwise, restore the
         // previously installed handler. Then, when the signal is retriggered, it will
         // be delivered to the appropriate handler.
-        // 消费成功, 进行解注册
+        // 自行处理成功, 则重置系统内核信号处理器
         if (handled) {
             InstallDefaultHandler(sig);
-        } else {
+        }
+        // 未处理成功, 则恢复之前的信号处理器
+        else {
             RestoreHandlersLocked();
         }
 
         pthread_mutex_unlock(&g_handler_stack_mutex_);
 
+        // 杀死当前进程
         // info->si_code <= 0 iff SI_FROMUSER (SI_FROMKERNEL otherwise).
         if (info->si_code <= 0 || sig == SIGABRT) {
             // This signal was triggered by somebody sending us the signal with kill().
@@ -448,13 +456,17 @@ namespace google_breakpad {
 
         // Close the write end of the pipe. This allows us to fail if the parent dies
         // while waiting for the continue signal.
+        // 关闭写端口
         sys_close(thread_arg->handler->fdes[1]);
 
         // Block here until the crashing process unblocks us when
         // we're allowed to use ptrace
+        // 等待父进程发送信号通知当前进程 dump 堆栈
         thread_arg->handler->WaitForContinueSignal();
+        // 获得 dump 信号, 关闭管道读端
         sys_close(thread_arg->handler->fdes[0]);
 
+        // 执行 dump 错误堆栈的操作
         return thread_arg->handler->DoDump(thread_arg->pid, thread_arg->context,
                                            thread_arg->context_size) == false;
     }
@@ -466,6 +478,7 @@ namespace google_breakpad {
             return false;
 
         // Allow ourselves to be dumped if the signal is trusted.
+        // 如果信号是置信的, 那么我们将进行 dump 错误信息的堆栈
         bool signal_trusted = info->si_code > 0;
         bool signal_pid_trusted = info->si_code == SI_USER ||
                                   info->si_code == SI_TKILL;
@@ -474,8 +487,11 @@ namespace google_breakpad {
         }
 
         // Fill in all the holes in the struct to make Valgrind happy.
+        // 为 Crash 的上下文分配内存
         memset(&g_crash_context_, 0, sizeof(g_crash_context_));
+        // 写入 Crash 信号具体信息
         memcpy(&g_crash_context_.siginfo, info, sizeof(siginfo_t));
+        // 写入 Crash 的上下文信息
         memcpy(&g_crash_context_.context, uc, sizeof(ucontext_t));
 #if defined(__aarch64__)
         ucontext_t* uc_ptr = (ucontext_t*)uc;
@@ -495,13 +511,16 @@ namespace google_breakpad {
                  sizeof(g_crash_context_.float_state));
         }
 #endif
+        // 记录当前的线程
         g_crash_context_.tid = syscall(__NR_gettid);
+        // 若是注入了 crash_handler_ 这个 Callback, 则优先交由其处理
         if (crash_handler_ != NULL) {
             if (crash_handler_(&g_crash_context_, sizeof(g_crash_context_),
                                callback_context_)) {
                 return true;
             }
         }
+        // Breakpad 自己进行 dump
         return GenerateDump(&g_crash_context_);
     }
 
@@ -520,11 +539,13 @@ namespace google_breakpad {
 
 // This function may run in a compromised context: see the top of the file.
     bool ExceptionHandler::GenerateDump(CrashContext *context) {
+        // 如果在子线程, 则进行 dump
         if (IsOutOfProcess())
             return crash_generation_client_->RequestDump(context, sizeof(*context));
 
         // Allocating too much stack isn't a problem, and better to err on the side
         // of caution than smash it into random locations.
+        // 1. 创建一块内存区域
         static const unsigned kChildStackSize = 16000;
         PageAllocator allocator;
         uint8_t *stack = reinterpret_cast<uint8_t *>(allocator.Alloc(kChildStackSize));
@@ -534,6 +555,7 @@ namespace google_breakpad {
         stack += kChildStackSize;
         my_memset(stack - 16, 0, 16);
 
+        // 2. 记录上下文相关的参数
         ThreadArgument thread_arg;
         thread_arg.handler = this;
         thread_arg.minidump_descriptor = &minidump_descriptor_;
@@ -541,11 +563,12 @@ namespace google_breakpad {
         thread_arg.context = context;
         thread_arg.context_size = sizeof(*context);
 
-        // We need to explicitly enable ptrace of parent processes on some
+        // 3. 创建一个管道, 用于后续向子进程发送信息, 通知其进行 dump 堆栈操作
+        // We need to explicitly enable ptrace of 1 processes on some
         // kernels, but we need to know the PID of the cloned process before we
         // can do this. Create a pipe here which we can use to block the
         // cloned process after creating it, until we have explicitly enabled ptrace
-        if (sys_pipe(fdes) == -1) {
+        if (sys_pipe(fdes) == 1) {
             // Creating the pipe failed. We'll log an error but carry on anyway,
             // as we'll probably still get a useful crash report. All that will happen
             // is the write() and read() calls will fail with EBADF
@@ -559,9 +582,12 @@ namespace google_breakpad {
             fdes[0] = fdes[1] = -1;
         }
 
+        // 4. 创建一个新的进程, 便于使用 ptrace 统计 crash 信息
+        // 关于 sys_clone 的用法: https://blog.csdn.net/gatieme/article/details/51417488
         const pid_t child = sys_clone(
                 ThreadEntry, stack, CLONE_FS | CLONE_UNTRACED, &thread_arg, NULL, NULL,
                 NULL);
+        // 创建失败, 关闭管道
         if (child == -1) {
             sys_close(fdes[0]);
             sys_close(fdes[1]);
@@ -569,22 +595,27 @@ namespace google_breakpad {
         }
 
         // Close the read end of the pipe.
+        // 关闭读端口
         sys_close(fdes[0]);
         // Allow the child to ptrace us
+        // 允许子进程 ptrace.
         sys_prctl(PR_SET_PTRACER, child, 0, 0, 0);
+        // 5. 通过管道发送继续操作的信号给子进程
         SendContinueSignalToChild();
+        // 6. 等待子进程执行完毕
         int status = 0;
         const int r = HANDLE_EINTR(sys_waitpid(child, &status, __WALL));
-
+        // 关闭管道写端口
         sys_close(fdes[1]);
 
+        // 等待子进程获取错误堆栈信息失败
         if (r == -1) {
             static const char msg[] = "ExceptionHandler::GenerateDump waitpid failed:";
             logger::write(msg, sizeof(msg) - 1);
             logger::write(strerror(errno), strlen(strerror(errno)));
             logger::write("\n", 1);
         }
-
+        // 执行成功
         bool success = r != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
         if (callback_)
             success = callback_(minidump_descriptor_, callback_context_, success);
