@@ -140,6 +140,7 @@ bool LinuxPtraceDumper::CopyFromProcess(void* dest, pid_t child,
 
   while (done < length) {
     const size_t l = (length - done > word_size) ? word_size : (length - done);
+    // 通过 ptrace 获取线程栈信息
     if (sys_ptrace(PTRACE_PEEKDATA, child, remote + done, &tmp) == -1) {
       tmp = 0;
     }

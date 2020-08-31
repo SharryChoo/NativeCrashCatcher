@@ -199,6 +199,7 @@ namespace google_breakpad {
             // to SIG_DFL is ignored. In that case, an infinite loop is entered as the
             // signal is repeatedly sent to breakpad's signal handler.
             // To work around this, directly call the system's sigaction.
+            // 将用户态信号处理函数置空, 下次再发送信号时, 直接由内核态执行
             struct kernel_sigaction sa;
             memset(&sa, 0, sizeof(sa));
             sys_sigemptyset(&sa.sa_mask);
@@ -311,7 +312,7 @@ namespace google_breakpad {
         sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
 
         for (int i = 0; i < kNumHandledSignals; ++i) {
-            // 3. 将系统相关的信号响应器替换成我们新建的
+            // 3. 将系统相关的信号处理器替换成我们新建的
             if (sigaction(kExceptionSignals[i], &sa, NULL) == -1) {
                 // At this point it is impractical to back out changes, and so failure to
                 // install a signal is intentionally ignored.
@@ -409,11 +410,11 @@ namespace google_breakpad {
         // successfully, restore the default handler. Otherwise, restore the
         // previously installed handler. Then, when the signal is retriggered, it will
         // be delivered to the appropriate handler.
-        // 自行处理成功, 则重置系统内核信号处理器
+        // 处理成功, 将信号置为 SIG_DEF 表示没有用户态信号处理函数, 方便后续让内核处理函数直接执行
         if (handled) {
             InstallDefaultHandler(sig);
         }
-        // 未处理成功, 则恢复之前的信号处理器
+        // 未处理成功, 则恢复之前的信号处理函数, 通过 tgkill 交由他们执行
         else {
             RestoreHandlersLocked();
         }
@@ -421,12 +422,12 @@ namespace google_breakpad {
         pthread_mutex_unlock(&g_handler_stack_mutex_);
 
         // 杀死当前进程
-        // info->si_code <= 0 iff SI_FROMUSER (SI_FROMKERNEL otherwise).
         if (info->si_code <= 0 || sig == SIGABRT) {
             // This signal was triggered by somebody sending us the signal with kill().
             // In order to retrigger it, we have to queue a new signal by calling
             // kill() ourselves.  The special case (si_pid == 0 && sig == SIGABRT) is
             // due to the kernel sending a SIGABRT from a user request via SysRQ.
+            // 重新调用 tgkill 发送这个信号, 交由之前的信号处理函数进行处理
             if (sys_tgkill(getpid(), syscall(__NR_gettid), sig) < 0) {
                 // If we failed to kill ourselves (e.g. because a sandbox disallows us
                 // to do so), we instead resort to terminating our process. This will
@@ -660,6 +661,7 @@ namespace google_breakpad {
         const uintptr_t principal_mapping_address =
                 minidump_descriptor_.address_within_principal_mapping();
         const bool sanitize_stacks = minidump_descriptor_.sanitize_stacks();
+        // 输出到控制台
         if (minidump_descriptor_.IsMicrodumpOnConsole()) {
             return google_breakpad::WriteMicrodump(
                     crashing_process,
@@ -671,6 +673,7 @@ namespace google_breakpad {
                     sanitize_stacks,
                     *minidump_descriptor_.microdump_extra_info());
         }
+        // 输出到文件
         if (minidump_descriptor_.IsFD()) {
             return google_breakpad::WriteMinidump(minidump_descriptor_.fd(),
                                                   minidump_descriptor_.size_limit(),
@@ -683,6 +686,7 @@ namespace google_breakpad {
                                                   principal_mapping_address,
                                                   sanitize_stacks);
         }
+        // 其他 case.
         return google_breakpad::WriteMinidump(minidump_descriptor_.path(),
                                               minidump_descriptor_.size_limit(),
                                               crashing_process,

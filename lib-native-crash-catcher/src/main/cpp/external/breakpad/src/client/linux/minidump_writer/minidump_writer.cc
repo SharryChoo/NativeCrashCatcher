@@ -155,9 +155,12 @@ class MinidumpWriter {
   }
 
   bool Init() {
+    // 初始化操作
     if (!dumper_->Init())
       return false;
 
+    // Suspend 所有线程
+    // 矫正 so 的地址
     if (!dumper_->ThreadsSuspend() || !dumper_->LateInit())
       return false;
 
@@ -167,7 +170,7 @@ class MinidumpWriter {
       if (!CrashingThreadReferencesPrincipalMapping())
         return false;
     }
-
+    // 打开要 dump 的的文件描述符
     if (fd_ != -1)
       minidump_writer_.SetFile(fd_);
     else if (!minidump_writer_.Open(path_))
@@ -245,25 +248,31 @@ class MinidumpWriter {
     unsigned dir_index = 0;
     MDRawDirectory dirent;
 
+    // 写入线程列表
     if (!WriteThreadListStream(&dirent))
       return false;
     dir.CopyIndex(dir_index++, &dirent);
 
+    // 写入 Mappings 信息
     if (!WriteMappings(&dirent))
       return false;
     dir.CopyIndex(dir_index++, &dirent);
 
+    // 写入 app 内存信息
     if (!WriteAppMemory())
       return false;
 
+    // 写入内存块信息
     if (!WriteMemoryListStream(&dirent))
       return false;
     dir.CopyIndex(dir_index++, &dirent);
 
+    // 写入异常信息
     if (!WriteExceptionStream(&dirent))
       return false;
     dir.CopyIndex(dir_index++, &dirent);
 
+    // 写入系统信息
     if (!WriteSystemInfoStream(&dirent))
       return false;
     dir.CopyIndex(dir_index++, &dirent);
@@ -311,6 +320,7 @@ class MinidumpWriter {
     // If you add more directory entries, don't forget to update kNumWriters,
     // above.
 
+    // dump 完毕, 恢复被 suspend 的线程
     dumper_->ThreadsResume();
     return true;
   }
@@ -325,7 +335,9 @@ class MinidumpWriter {
     thread->stack.memory.data_size = 0;
     thread->stack.memory.rva = minidump_writer_.position();
 
+    // 通过 GetStackInfo 重新校验线程栈信息
     if (dumper_->GetStackInfo(&stack, &stack_len, stack_pointer)) {
+      // 约束栈的长度
       if (max_stack_len >= 0 &&
           stack_len > static_cast<unsigned int>(max_stack_len)) {
         stack_len = max_stack_len;
@@ -339,6 +351,7 @@ class MinidumpWriter {
         stack = reinterpret_cast<const void*>(int_stack);
       }
       *stack_copy = reinterpret_cast<uint8_t*>(Alloc(stack_len));
+      // 拷贝线程栈, stack 为栈顶地址, stack_len 为栈的长度
       dumper_->CopyFromProcess(*stack_copy, thread->thread_id, stack,
                                stack_len);
 
@@ -411,12 +424,15 @@ class MinidumpWriter {
       // we used the actual state of the thread we would find it running in the
       // signal handler with the alternative stack, which would be deeply
       // unhelpful.
+      // dump Crash 线程的堆栈
       if (static_cast<pid_t>(thread.thread_id) == GetCrashThread() &&
           ucontext_ &&
           !dumper_->IsPostMortem()) {
         uint8_t* stack_copy;
+        // 从 ucontext_ 中获取线程栈的 sp 寄存器的地址信息, 即栈顶
         const uintptr_t stack_ptr = UContextReader::GetStackPointer(ucontext_);
         if (!FillThreadStack(&thread, stack_ptr,
+                             // 从 ucontext_ 中获取当前 pc 寄存器的位置, 表示栈帧的底部
                              UContextReader::GetInstructionPointer(ucontext_),
                              -1, &stack_copy))
           return false;
@@ -475,7 +491,10 @@ class MinidumpWriter {
 #endif
         thread.thread_context = cpu.location();
         crashing_thread_context_ = cpu.location();
-      } else {
+      }
+      // dump 非 Crash 线程的堆栈
+      else {
+        // 从 /proc/$pid/status 中获取线程栈的寄存器指针信息
         ThreadInfo info;
         if (!dumper_->GetThreadInfoByIndex(i, &info))
           return false;
@@ -1363,8 +1382,10 @@ bool WriteMinidumpImpl(const char* minidump_path,
                        bool skip_stacks_if_mapping_unreferenced,
                        uintptr_t principal_mapping_address,
                        bool sanitize_stacks) {
+  // 实例化了一个 Ptrace 对象
   LinuxPtraceDumper dumper(crashing_process);
   const ExceptionHandler::CrashContext* context = NULL;
+  // 获取 Crash 的上下文信息
   if (blob) {
     if (blob_size != sizeof(ExceptionHandler::CrashContext))
       return false;
@@ -1379,6 +1400,7 @@ bool WriteMinidumpImpl(const char* minidump_path,
   writer.set_minidump_size_limit(minidump_size_limit);
   if (!writer.Init())
     return false;
+  // 进行 dump 操作
   return writer.Dump();
 }
 

@@ -35,6 +35,7 @@ add_library(
         native-crash-catcher
         SHARED
         native-crash-catcher.cpp
+        SampleCrashCatcher.cpp
 )
 
 # 添加外部链接库

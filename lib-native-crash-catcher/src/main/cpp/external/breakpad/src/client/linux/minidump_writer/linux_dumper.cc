@@ -298,6 +298,9 @@ LinuxDumper::~LinuxDumper() {
 }
 
 bool LinuxDumper::Init() {
+  // 读取 proc/pid/auxv 获取系统上下文信息
+  // 读取 proc/pid/task 获取所有线程数信息添加到 threads_ 中缓存
+  // 读取 proc/pid/maps 获取加载的所有 so 的地址, 添加到 mappings_ 中缓存
   return ReadAuxv() && EnumerateThreads() && EnumerateMappings();
 }
 
@@ -573,9 +576,12 @@ bool LinuxDumper::ReadAuxv() {
 
 bool LinuxDumper::EnumerateMappings() {
   char maps_path[NAME_MAX];
+  // 1. 拼节内存文件系统中的 maps 的路径信息
   if (!BuildProcPath(maps_path, pid_, "maps"))
     return false;
 
+  // 2. 记录 linux-gate.so 是内核映射的第一个 so 的地址
+  // 它是一般不会出现在 proc/{pid}/maps 列表中, 我们可以通过 auxv_ AT_SYSINFO_EHDR 中获取它的地址
   // linux_gate_loc is the beginning of the kernel's mapping of
   // linux-gate.so in the process.  It doesn't actually show up in the
   // maps list as a filename, but it can be found using the AT_SYSINFO_EHDR
@@ -585,6 +591,7 @@ bool LinuxDumper::EnumerateMappings() {
   // information.
   const void* linux_gate_loc =
       reinterpret_cast<void *>(auxv_[AT_SYSINFO_EHDR]);
+  // 3. 获取 entry-point 的地址, 若是存在, 后面需要对集合进行重排列
   // Although the initial executable is usually the first mapping, it's not
   // guaranteed (see http://crosbug.com/25355); therefore, try to use the
   // actual entry point to find the mapping.
@@ -610,6 +617,7 @@ bool LinuxDumper::EnumerateMappings() {
           const char* name = NULL;
           // Only copy name if the name is a valid path name, or if
           // it's the VDSO image.
+          // 说明找到了第一个 so(linux-gate.so), 将 offset 置为 0
           if (((name = my_strchr(line, '/')) == NULL) &&
               linux_gate_loc &&
               reinterpret_cast<void*>(start_addr) == linux_gate_loc) {
@@ -654,6 +662,7 @@ bool LinuxDumper::EnumerateMappings() {
     line_reader->PopLine(line_len);
   }
 
+  // 如果当前进程包含 entry point, 并且它不在集合的第一个位置, 则将其移动到第一个位置, 方便后续使用
   if (entry_point_loc) {
     for (size_t i = 0; i < mappings_.size(); ++i) {
       MappingInfo* module = mappings_[i];
@@ -765,10 +774,12 @@ void LinuxDumper::LatePostprocessMappings() {
     if (!(mapping->exec && mapping->name[0] == '/')) {
       continue;
     }
+    // 获取 ELF 文件头部
     ElfW(Ehdr) ehdr;
     if (!GetLoadedElfHeader(mapping->start_addr, &ehdr)) {
       continue;
     }
+    // 对 so 库进行加载地址的校验
     if (ehdr.e_type == ET_DYN) {
       // Compute the effective load bias for this mapped library, and update
       // the mapping to hold that rather than |start_addr|, at the same time
