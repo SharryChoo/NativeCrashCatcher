@@ -7,12 +7,12 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.view.View;
 
-import com.sharry.lib.breakpadnativecrashcatcher.NativeCrashCatcherManager;
-
 import java.io.File;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.sharry.lib.mynativecrashcatcher.NativeCrashCatcherManager;
 
 
 public class MainActivity extends Activity {

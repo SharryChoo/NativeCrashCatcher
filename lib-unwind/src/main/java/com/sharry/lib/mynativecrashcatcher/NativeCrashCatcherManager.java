@@ -4,7 +4,7 @@ package com.sharry.lib.mynativecrashcatcher;
 public class NativeCrashCatcherManager {
 
     static {
-        System.loadLibrary("breakpad-catcher");
+        System.loadLibrary("unwind-catcher");
     }
 
     public static void init(String path) {

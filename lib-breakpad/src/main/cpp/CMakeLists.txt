@@ -35,7 +35,7 @@ include_directories(
 add_library(
         breakpad-catcher
         SHARED
-        native-crash-catcher.cpp
+        native-bridge.cpp
 )
 
 # 添加外部链接库

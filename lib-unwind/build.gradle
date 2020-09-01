@@ -8,11 +8,6 @@ android {
         targetSdkVersion 28
         versionCode 1
         versionName "1.0"
-        externalNativeBuild {
-            cmake {
-                cppFlags "-std=c++11 -fno-exceptions"
-            }
-        }
         ndk {
             abiFilters "armeabi-v7a"
         }
