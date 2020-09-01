@@ -10,13 +10,13 @@
 
 SampleCrashCatcher::SampleCrashCatcher() {
     // 1. 替换系统的信号处理栈
-    installAlterStack();
+    installOtherSigHandlerStack();
     // 2. 替换系统信号处理函数
     installSysSigHandler();
 }
 
 SampleCrashCatcher::~SampleCrashCatcher() {
-    restoreAlterStack();
+    restoreOtherSigHandlerStack();
     restoreSysSinHandler();
 }
 
@@ -30,23 +30,22 @@ stack_t old_stack;
 stack_t new_stack;
 bool stack_installed = false;
 
-void SampleCrashCatcher::installAlterStack() {
+void SampleCrashCatcher::installOtherSigHandlerStack() {
     // 已经安装了, 不做任何处理
     if (stack_installed) {
         return;
     }
-    // 开辟空间, 用于存储之前的信号找
+    // 开辟空间, 用于获取之前的信号处理栈
     memset(&old_stack, 0, sizeof(old_stack));
-    // 开辟一个新的信号栈
+    // 开辟一个新的信号栈对消
     memset(&new_stack, 0, sizeof(new_stack));
-
-    // SIGSTKSZ may be too small to prevent the signal handlers from overrunning
-    // the alternative stack. Ensure that the size of the alternative stack is
-    // large enough.
-    // 描述信号栈的最小值
+    // 为了防止在当前线程栈上执行信号处理函数导致再次 StackOverFlow, 这里为其设置一个额外的栈空间
+    // SIGSEGV 很有可能是栈溢出引起的，如果在默认的栈上运行很有可能会破坏程序运行的现场，无法获取到正确的上下文。
+    // 而且当栈满了（太多次递归，栈上太多对象），系统会在同一个已经满了的栈上调用 SIGSEGV 的信号处理函数，又再一次引起同样的信号。
+    // 我们应该开辟一块新的空间作为运行信号处理函数的栈。可以使用 sigaltstack 在任意线程注册一个可选的栈，保留一下在紧急情况下使用的空间。
+    // （系统会在危险情况下把栈指针指向这个地方，使得可以在一个新的栈上运行信号处理函数）
     static const unsigned minimumSigStackSize = std::max(16384, SIGSTKSZ);
-
-    // 若当前不存在信号栈 || 或者信号栈太小, 则重新创建信号栈
+    // 若当前不存在信号栈 || 或者信号栈太小, 都触发重新创建信号处理栈
     if (sys_sigaltstack(NULL, &old_stack) == -1 || !old_stack.ss_sp ||
         old_stack.ss_size < minimumSigStackSize) {
         // 分配一个连续的空间, 作为信号栈内存
@@ -58,11 +57,11 @@ void SampleCrashCatcher::installAlterStack() {
             return;
         }
         stack_installed = true;
-        ALOGI("===============installAlterStack success================");
+        ALOGI("===============installOtherSigHandlerStack success================");
     }
 }
 
-void SampleCrashCatcher::restoreAlterStack() {
+void SampleCrashCatcher::restoreOtherSigHandlerStack() {
     // 如果没有安装, 不做任何处理
     if (!stack_installed) {
         return;
@@ -93,7 +92,7 @@ void SampleCrashCatcher::restoreAlterStack() {
     // 释放新信号栈的 ss_sp
     free(new_stack.ss_sp);
     stack_installed = false;
-    ALOGI("===============restoreAlterStack success================");
+    ALOGI("===============restoreOtherSigHandlerStack success================");
 }
 
 

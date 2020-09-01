@@ -34,10 +34,10 @@ public:
     static void restoreSysSinHandler();
 
     // 替换系统的信号处理栈
-    static void installAlterStack();
+    static void installOtherSigHandlerStack();
 
     // 恢复系统信号处理栈
-    static void restoreAlterStack();
+    static void restoreOtherSigHandlerStack();
 
     // 替换系统信号处理函数
     static void installSysSigHandler();
