@@ -150,8 +150,8 @@ _Unwind_Reason_Code unwindCallback(_Unwind_Context *cxt, void *arg) {
             backtrace->frame_num,                       // 栈的 num
             cur_sf_pc - (uintptr_t) info.dli_fbase,     // 减去 so 库的起始地址, 获得 crash 函数代码的相对地址
             info.dli_fname,                             // so 库名称
-            info.dli_sname,                             // 方法名称
-            cur_sf_pc - (uintptr_t) info.dli_saddr      // 减去 so 库代码段起始地址, 获得函数相对地址
+            info.dli_sname,                             // 最接近 cur_sf_pc 的所指定的符号(即函数名)
+            cur_sf_pc - (uintptr_t) info.dli_saddr      // cur_sf_pc 地址与 info.dli_sname 地址的偏移量 (即与代码段函数地址的偏移量)
     );
     // 更新数据, 准备下一层的回溯
     backtrace->frame_num++;
