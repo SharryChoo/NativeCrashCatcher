@@ -1,1 +1,1 @@
-include ':app', ':lib-native-crash-catcher'
+include ':app', ':lib-breakpad', 'lib-unwind'

@@ -7,7 +7,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.view.View;
 
-import com.sharry.lib.nativecrashcather.NativeCrashCatcherManager;
+import com.sharry.lib.breakpadnativecrashcatcher.NativeCrashCatcherManager;
 
 import java.io.File;
 
