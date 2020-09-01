@@ -1,21 +1,12 @@
 #include <csignal>
 #include <cstring>
 #include <algorithm>
+#include <dlfcn.h>
+#include <inttypes.h>
 #include "SampleCrashCatcher.h"
 #include "Constants.h"
 #include "linux_syscall_support.h"
-
-struct CrashContext {
-    siginfo_t siginfo;
-    pid_t tid;  // the crashing thread.
-    ucontext_t context;
-#if !defined(__ARM_EABI__) && !defined(__mips__)
-    // #ifdef this out because FP state is not part of user ABI for Linux ARM.
-    // In case of MIPS Linux FP state is already part of ucontext_t so
-    // 'float_state' is not required.
-    fpstate_t float_state;
-#endif
-};
+#include "unwind.h"
 
 SampleCrashCatcher::SampleCrashCatcher() {
     // 1. 替换系统的信号处理栈
@@ -67,7 +58,7 @@ void SampleCrashCatcher::installAlterStack() {
             return;
         }
         stack_installed = true;
-//        ALOGI("===============installAlterStack success================");
+        ALOGI("===============installAlterStack success================");
     }
 }
 
@@ -102,7 +93,7 @@ void SampleCrashCatcher::restoreAlterStack() {
     // 释放新信号栈的 ss_sp
     free(new_stack.ss_sp);
     stack_installed = false;
-//    ALOGI("===============restoreAlterStack success================");
+    ALOGI("===============restoreAlterStack success================");
 }
 
 
@@ -124,17 +115,85 @@ const static int gExceptionSignals[] = {
 const static int gNumHandledSignals = sizeof(gExceptionSignals) / sizeof(gExceptionSignals[0]);
 struct sigaction old_handlers[gNumHandledSignals];
 bool handlers_installed = false;
-CrashContext gCrashContext;
 
-bool dumpStack() {
-    // 利用 unwind 库进行栈回溯
-//    unwind_t uwind;
-    return false;
+_Unwind_Reason_Code unwindCallback(_Unwind_Context *cxt, void *arg) {
+    BackTrace *backtrace = (BackTrace *) arg;
+    // 获取当前栈帧的中存放 pc 寄存器历史值的地址
+    uintptr_t cur_sf_pc = _Unwind_GetIP(cxt);
+    // 获取当前栈帧的中存放 sp 寄存器历史值的地址
+    uintptr_t cur_sf_sp = _Unwind_GetCFA(cxt);
+    // 当前栈帧的 pc 与 sp 和上一个栈帧相等 || 已经回溯到了我们所需的最大深度, 则结束这次栈回溯
+    if ((backtrace->frame_num > 0 && cur_sf_pc == backtrace->prev_pc &&
+         cur_sf_sp == backtrace->prev_sp)|| backtrace->frame_num > MAX_BACKTRACE_DEPTH) {
+        return _URC_END_OF_STACK;
+    }
+    // 找寻回溯起始位置
+    if (backtrace->found_stack == 0) {
+        // 定位 Crash 时的目标栈帧
+        if (
+            // 确保存在栈帧中存在 pc 值
+                backtrace->crash_sf_pc >= sizeof(uintptr_t)
+                // 确保当前栈帧中存放 pc 值的地址, 与 crash 时的栈帧存放 pc 值的地址在一定的误差之内
+                && (cur_sf_pc <= backtrace->crash_sf_pc + sizeof(uintptr_t) &&
+                    cur_sf_pc >= backtrace->crash_sf_pc - sizeof(uintptr_t))) {
+            // 说明当前回溯到了 Crash 所在的栈帧
+            backtrace->found_stack = 1;
+        } else {
+            return _URC_NO_REASON;
+        }
+    }
+    // 打印回溯到的数据
+    Dl_info info;
+    dladdr((void *) cur_sf_pc, &info);
+    ALOGW(
+            "  #%d pc %08u %s (%s + %u)",
+            backtrace->frame_num,                       // 栈的 num
+            cur_sf_pc - (uintptr_t) info.dli_fbase,     // 减去 so 库的起始地址, 获得 crash 函数代码的相对地址
+            info.dli_fname,                             // so 库名称
+            info.dli_sname,                             // 方法名称
+            cur_sf_pc - (uintptr_t) info.dli_saddr      // 减去 so 库代码段起始地址, 获得函数相对地址
+    );
+    // 更新数据, 准备下一层的回溯
+    backtrace->frame_num++;
+    // 若是达到了我们所需的最大深度, 也直接 return
+    if (backtrace->frame_num > MAX_BACKTRACE_DEPTH) {
+        return _URC_END_OF_STACK;
+    }
+    // 记录当前栈帧中 sp 的数据
+    backtrace->prev_sp = cur_sf_sp;
+    // 记录当前栈帧中 pc 的数据
+    backtrace->prev_pc = cur_sf_pc;
+    return _URC_NO_REASON;
+}
+
+bool dumpStack(siginfo_t *info, void *uc) {
+    if (!info || !uc) {
+        return false;
+    }
+    // print brief info.
+    int tid = syscall(__NR_gettid);
+    // 获取崩溃时相关寄存器的值
+    ucontext_t *uc_ptr = (ucontext_t *) uc;
+    BackTrace backTrace;
+    backTrace.frame_num = 0;
+    backTrace.found_stack = 0;
+    backTrace.prev_sp = 0;
+    backTrace.prev_pc = 0;
+    backTrace.crash_sf_pc = uc_ptr->uc_mcontext.arm_pc;
+    ALOGW(
+            "Native Crash ===> tid: %d, signal: %d, code: %d, error: %d",
+            tid,
+            info->si_signo,
+            info->si_code,
+            info->si_errno
+    );
+    _Unwind_Backtrace(unwindCallback, &backTrace);
+    return true;
 }
 
 // 1. 第一个参数为信号值
 // 2. 第二个参数为信号的一些具体信息
-// 3. 第三个参数为一些上下文信息
+// 3. 第三个参数为一些上下文信息, 包括崩溃时的 pc 值
 void SignalHandler(int sig, siginfo_t *info, void *uc) {
     // Allow ourselves to be dumped if the signal is trusted.
     // 如果信号是置信的, 那么我们将进行 dump 错误信息的堆栈
@@ -144,41 +203,28 @@ void SignalHandler(int sig, siginfo_t *info, void *uc) {
     if (signal_trusted || (signal_pid_trusted && info->si_pid == getpid())) {
         sys_prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
     }
-
-    // Fill in all the holes in the struct to make Valgrind happy.
-    // 为 Crash 的上下文分配内存
-    memset(&gCrashContext, 0, sizeof(gCrashContext));
-    // 写入 Crash 信号具体信息
-    memcpy(&gCrashContext.siginfo, info, sizeof(siginfo_t));
-    // 写入 Crash 的上下文信息
-    memcpy(&gCrashContext.context, uc, sizeof(ucontext_t));
-#if defined(__aarch64__)
-    ucontext_t* uc_ptr = (ucontext_t*)uc;
-        struct fpsimd_context* fp_ptr =
-            (struct fpsimd_context*)&uc_ptr->uc_mcontext.__reserved;
-        if (fp_ptr->head.magic == FPSIMD_MAGIC) {
-          memcpy(&g_crash_context_.float_state, fp_ptr,
-                 sizeof(g_crash_context_.float_state));
-        }
-#elif !defined(__ARM_EABI__) && !defined(__mips__)
-    // FP state is not part of user ABI on ARM Linux.
-        // In case of MIPS Linux FP state is already part of ucontext_t
-        // and 'float_state' is not a member of CrashContext.
-        ucontext_t* uc_ptr = (ucontext_t*)uc;
-        if (uc_ptr->uc_mcontext.fpregs) {
-          memcpy(&g_crash_context_.float_state, uc_ptr->uc_mcontext.fpregs,
-                 sizeof(g_crash_context_.float_state));
-        }
-#endif
     // 记录当前的线程
-    gCrashContext.tid = syscall(__NR_gettid);
     // 处理成功, 将信号置为 SIG_DEF 表示没有用户态信号处理函数, 方便后续让内核处理函数直接执行
-    if (dumpStack()) {
+    if (dumpStack(info, uc)) {
         SampleCrashCatcher::restoreKernelDefaultSigHandler(sig);
     }
         // 未处理成功, 则恢复之前的信号处理函数, 通过 tgkill 交由他们执行
     else {
         SampleCrashCatcher::restoreSysSinHandler();
+    }
+    // 重新发送这个信号, 转发给之前的信号处理函数处理
+    if (info->si_code <= 0 || sig == SIGABRT) {
+        // 重新调用 tgkill 发送这个信号, 交由之前的信号处理函数进行处理
+        if (sys_tgkill(getpid(), syscall(__NR_gettid), sig) < 0) {
+            // If we failed to kill ourselves (e.g. because a sandbox disallows us
+            // to do so), we instead resort to terminating our process. This will
+            // result in an incorrect exit code.
+            _exit(1);
+        }
+    } else {
+        // This was a synchronous signal triggered by a hard fault (e.g. SIGSEGV).
+        // No need to reissue the signal. It will automatically trigger again,
+        // when we return from the signal handler.
     }
 }
 
@@ -217,7 +263,7 @@ void SampleCrashCatcher::installSysSigHandler() {
         }
     }
     handlers_installed = true;
-//    ALOGI("===============installSysSigHandler success================");
+    ALOGI("===============installSysSigHandler success================");
 }
 
 void SampleCrashCatcher::restoreSysSinHandler() {
@@ -233,7 +279,7 @@ void SampleCrashCatcher::restoreSysSinHandler() {
         }
     }
     handlers_installed = false;
-//    ALOGI("===============restoreSysSinHandler success================");
+    ALOGI("===============restoreSysSinHandler success================");
 }
 
 void SampleCrashCatcher::restoreKernelDefaultSigHandler(int sig) {
@@ -254,4 +300,5 @@ void SampleCrashCatcher::restoreKernelDefaultSigHandler(int sig) {
 #else
     signal(sig, SIG_DFL);
 #endif
+    ALOGI("===============restore %d kernel default sig handler success================", sig);
 }
